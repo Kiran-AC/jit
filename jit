@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# set -x
+
+current_branch=$(git branch --show-current)
+default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+repo_name=$(basename `git rev-parse --show-toplevel`)
+
+# Create a commit with JIRA ticket number in commit message
+function jira_commit {
+  if [ $? -eq 0 ]; then
+    JIRA_TICKET=$(echo $current_branch | tr '[:lower:]' '[:upper:]' | grep -Eo '^[A-Z]{3,5}\-[0-9]{0,5}')
+    COMMIT_STRING=$(echo $@|sed 's/commit //')
+    if [ -z $JIRA_TICKET ]; then 
+      echo "Invalid ticket number: '$current_branch'"
+    else
+      if [ -z $2 ]; then
+        COMMIT_MESSAGE="[$JIRA_TICKET]"
+      else
+        COMMIT_MESSAGE="[$JIRA_TICKET] $COMMIT_STRING"
+      fi
+      git commit -m "$COMMIT_MESSAGE"
+    fi
+  else
+    exit 1
+  fi
+}
+
+# Cleanup all merged branches
+function branch_cleanup {
+  branches=$(git branch --merged| egrep -v "(^\*|master|main|dev)")
+  for branch in $branches; do
+    git branch -d $branch
+  done
+
+    # actually_delete="$1"
+    # git fetch -p
+    # IFS=$'\n' read -r -d '' -a gone_branches < <( git branch -av | grep '\[gone\]' | grep -v $current_branch | awk '{ print $1 }' && printf '\0' )
+    # # branches=$(git branch -av | grep '\[gone\]' | grep -v $current_branch | awk '{ print $1 }')
+    # # echo -e "Gone branches:\n$branches"
+    # if declare -p gone_branches; then
+    #   for gone_branch in "${gone_branches[@]}";do
+    #     echo $gone_branch
+    #   done
+    # fi
+
+    # if [[ "$actually_delete" == "--delete" ]] ; then echo "Deleting..." ; echo $branches | xargs -L 1 git branch -D ; else echo "use --delete to remove those branches" ; fi
+}
+
+function linting {
+  git pull origin main
+  for file in $(git diff --name-only origin/main $current_branch); do
+    filename=$(basename -- $file)
+    extension="${filename##*.}"
+
+    case $extension in
+      "yaml" | "yml")
+        yamllint -d "{extends: relaxed}" $file
+      ;;
+      "sh")
+        # shellcheck -e SC2086 $file
+        shellcheck $file
+      ;;
+      *)
+        echo "filetype $extension has no linter, skipping linting"
+      ;;
+    esac
+
+  done
+}
+
+
+case $1 in
+  "commit")
+    jira_commit "$@"
+  ;;
+  "push")
+    git pull origin $current_branch
+    git push -u origin $current_branch
+    open -a 'Google Chrome' https://github.com/smartpension/${repo_name}/pull/new/${current_branch}
+  ;;
+  "commit-diff")
+    if git ls-remote --exit-code -q origin $current_branch > /dev/null 2>&1; then
+      echo "Pulling $default_branch"
+      git pull -q origin $default_branch
+      echo "Showing changes between origin/$current_branch : $current_branch"
+      git diff --name-status origin/$current_branch $current_branch 
+    else
+      echo "Branch $current_branch does not exist in origin"
+    fi
+  ;;
+  "cleanup")
+    branch_cleanup
+  ;;
+  "lint")
+    linting
+  ;;
+  *)
+    git $@ 
+  ;;
+esac
